@@ -8,9 +8,20 @@
 
 import https from "https";
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY!;
-const HASHNODE_API_KEY = process.env.HASHNODE_API_KEY!;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const HASHNODE_API_KEY = process.env.HASHNODE_API_KEY;
 const HASHNODE_HOST = "coreit.hashnode.dev";
+
+// Fail fast with a clear message instead of sending `undefined` as a credential
+// and getting an opaque 401 three calls later.
+const missing = [
+  !ANTHROPIC_API_KEY && "ANTHROPIC_API_KEY",
+  !HASHNODE_API_KEY && "HASHNODE_API_KEY",
+].filter(Boolean);
+if (missing.length) {
+  console.error(`Missing required env var(s): ${missing.join(", ")}`);
+  process.exit(1);
+}
 
 const TOPICS = [
   "How to audit your SaaS subscriptions in one afternoon",
@@ -53,7 +64,10 @@ async function getPublicationId(): Promise<string> {
 async function writePost(topic: string): Promise<{ title: string; content: string; subtitle: string; tags: string[] }> {
   const result = await request("POST", "api.anthropic.com", "/v1/messages", {
     model: "claude-sonnet-4-6",
-    max_tokens: 3000,
+    // A 600-900 word markdown post, JSON-escaped and wrapped with title/subtitle/
+    // tags, routinely exceeds 3000 output tokens — too low a cap truncates the
+    // response mid-JSON and the parse below fails. 8000 leaves ample headroom.
+    max_tokens: 8000,
     messages: [{
       role: "user",
       content: `Write an SEO-optimized blog post for CoreIT — a B2B SaaS IT management portal for IT managers at small and midsize companies (10-200 employees).
@@ -83,8 +97,48 @@ Return ONLY valid JSON, nothing else.`,
     "anthropic-version": "2023-06-01",
   });
 
-  const text = result.content?.[0]?.text ?? "{}";
-  return JSON.parse(text);
+  // Surface API failures instead of swallowing them. The old `?? "{}"` turned a
+  // 401/404/429 (bad key, no model access, rate limit) into an empty object, so
+  // the real error only showed up later as a confusing `undefined.toLowerCase()`.
+  if (result?.type === "error") {
+    throw new Error(`Anthropic API error: ${result.error?.type} — ${result.error?.message}`);
+  }
+  const text: string | undefined = result?.content?.[0]?.text;
+  if (!text) {
+    throw new Error(`Unexpected Anthropic response: ${JSON.stringify(result).slice(0, 500)}`);
+  }
+  if (result.stop_reason === "max_tokens") {
+    throw new Error("Response hit max_tokens — JSON is truncated. Raise max_tokens or shorten the post.");
+  }
+
+  const post = parsePostJson(text);
+  if (!post.title || !post.content) {
+    throw new Error(`Model returned JSON without a title/content: ${text.slice(0, 300)}`);
+  }
+  // Normalize optional fields so publishPost never dereferences undefined.
+  post.subtitle = post.subtitle || "";
+  post.tags = Array.isArray(post.tags) ? post.tags : [];
+  return post;
+}
+
+// Models often wrap "JSON only" output in ```json fences or add a stray
+// sentence. Strip a fenced block if present, else fall back to the outermost
+// {...} span, then parse.
+function parsePostJson(text: string): { title: string; content: string; subtitle: string; tags: string[] } {
+  let candidate = text.trim();
+  const fence = candidate.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fence) {
+    candidate = fence[1].trim();
+  } else if (!candidate.startsWith("{")) {
+    const first = candidate.indexOf("{");
+    const last = candidate.lastIndexOf("}");
+    if (first !== -1 && last > first) candidate = candidate.slice(first, last + 1);
+  }
+  try {
+    return JSON.parse(candidate);
+  } catch (err: any) {
+    throw new Error(`Could not parse model output as JSON (${err.message}): ${candidate.slice(0, 300)}`);
+  }
 }
 
 async function publishPost(publicationId: string, post: { title: string; content: string; subtitle: string; tags: string[] }) {
@@ -128,20 +182,25 @@ async function main() {
   if (!publicationId) { console.error("Could not get publication ID"); process.exit(1); }
   console.log(`Publication ID: ${publicationId}`);
 
-  const published = await getAlreadyPublished();
-  const available = TOPICS.filter((t) => !published.has(t));
-
-  if (available.length === 0) {
-    console.log("All topics already published. Add new topics to the TOPICS array.");
-    return;
-  }
-
-  // Pick a random unused topic
-  const topic = available[Math.floor(Math.random() * available.length)];
+  // Deterministic weekly rotation through the topic list. Stateless (works in a
+  // cron CI run with no persisted file) and guarantees no repeat until the whole
+  // list has cycled. The old approach filtered TOPICS by `!published.has(topic)`,
+  // but `published` holds generated post *titles*, which never equal the raw
+  // topic strings — so the filter did nothing and topics repeated at random.
+  const weekIndex = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000)) % TOPICS.length;
+  const topic = TOPICS[weekIndex];
   console.log(`Writing post: "${topic}"`);
 
   const post = await writePost(topic);
   console.log(`  Title: ${post.title}`);
+
+  // Last-second guard against publishing the exact same title twice (e.g. the
+  // job fires more than once in a week).
+  const published = await getAlreadyPublished();
+  if (published.has(post.title)) {
+    console.log(`  Already published a post titled "${post.title}" — skipping.`);
+    return;
+  }
 
   const result = await publishPost(publicationId, post);
   const url = result?.data?.publishPost?.post?.url;
@@ -149,10 +208,15 @@ async function main() {
   if (url) {
     console.log(`  ✓ Published: ${url}`);
   } else {
-    console.error("  ✗ Publish failed:", JSON.stringify(result));
+    const detail = result?.errors ? JSON.stringify(result.errors) : JSON.stringify(result);
+    console.error("  ✗ Publish failed:", detail);
+    process.exit(1);
   }
 
   console.log("Done.\n");
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "CoreIT autonomous lead gen & outreach agents",
   "scripts": {
-    "lead-gen": "npx ts-node lead-gen-agent.ts"
+    "lead-gen": "npx ts-node lead-gen-agent.ts",
+    "blog": "npx ts-node blog-writer-agent.ts",
+    "typecheck": "tsc --noEmit --skipLibCheck --esModuleInterop --target ES2020 --module commonjs --moduleResolution node blog-writer-agent.ts"
   },
   "dependencies": {
     "typescript": "^5.0.0",

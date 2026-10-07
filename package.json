@@ -5,7 +5,8 @@
   "scripts": {
     "lead-gen": "npx ts-node lead-gen-agent.ts",
     "blog": "npx ts-node blog-writer-agent.ts",
-    "typecheck": "tsc --noEmit --skipLibCheck --esModuleInterop --target ES2020 --module commonjs --moduleResolution node blog-writer-agent.ts"
+    "publish": "npx ts-node publish-to-hashnode.ts",
+    "typecheck": "tsc --noEmit --skipLibCheck --esModuleInterop --target ES2020 --module commonjs --moduleResolution node blog-writer-agent.ts publish-to-hashnode.ts"
   },
   "dependencies": {
     "typescript": "^5.0.0",

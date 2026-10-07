@@ -16,28 +16,42 @@ Runs weekly. For each target domain:
 ### Add new target domains
 Edit the `TARGET_DOMAINS` array in `lead-gen-agent.ts`.
 
-## blog-writer-agent.ts
+## Blog (coreit.hashnode.dev)
 
-Writes one SEO blog post with Claude and publishes it to
-`coreit.hashnode.dev` via the Hashnode API. Runs weekly via GitHub Actions
-(`.github/workflows/blog.yml`, Mondays 14:00 UTC) and can be triggered by
-hand from the **Actions** tab (`workflow_dispatch`).
+The weekly blog is split into **write** and **publish** so it can run on a
+Claude subscription with no LLM API key.
 
-Run locally:
+### Active flow: scheduled Claude Code task (auto-publish)
+
+A weekly scheduled Claude Code task writes the post (on the Claude
+subscription — no metered API key) and then runs the publish-only script
+below to post it. The only secret required is `HASHNODE_API_KEY`, stored as
+an **environment secret** in the Claude Code environment.
+
+### publish-to-hashnode.ts
+
+Publishes a pre-written post to `coreit.hashnode.dev`. Needs only
+`HASHNODE_API_KEY` — no LLM key. Takes a JSON file:
+
+```json
+{ "title": "...", "subtitle": "...", "tags": ["a","b"], "content": "# markdown" }
+```
+
+```bash
+HASHNODE_API_KEY=... npm run publish -- post.json
+```
+
+It skips a post whose exact title is already published, and exits non-zero on
+failure. The publication at `coreit.hashnode.dev` must already exist, or it
+exits with "Could not get publication ID".
+
+### blog-writer-agent.ts (optional, needs an LLM API key)
+
+A fully self-contained alternative that writes *and* publishes in one shot
+using the Claude Messages API — use it only if you have an
+`ANTHROPIC_API_KEY`. Topics live in its `TOPICS` array and rotate
+deterministically by week.
+
 ```bash
 ANTHROPIC_API_KEY=... HASHNODE_API_KEY=... npm run blog
 ```
-
-### Env vars required
-- `ANTHROPIC_API_KEY` — writes the post via the Claude Messages API
-- `HASHNODE_API_KEY` — publishes to the Hashnode publication
-
-For the scheduled run, add both as repository secrets
-(**Settings → Secrets and variables → Actions**). The Hashnode publication at
-`coreit.hashnode.dev` must already exist, or the run exits with
-"Could not get publication ID".
-
-### Topic rotation
-Topics come from the `TOPICS` array and rotate deterministically by week, so a
-topic doesn't repeat until the whole list has cycled. Add new topics to that
-array to keep the blog fresh.
